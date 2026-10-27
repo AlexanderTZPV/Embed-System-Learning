@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import traceback
 from .core import now,Sanity
-from .capture import locate,grab,Reader,exception_detail
+from .capture import locate,grab,Reader,exception_detail,calibration_report
 
 
 def probe(config):
@@ -21,12 +21,11 @@ def probe(config):
         report['steps'].append({'stage':stage,'ok':True})
         stage='OCR识别'
         tick,raw=reader.read(image,config['layout'],config['code'])
-        tick=Sanity().check(tick)
-        report['steps'].append({'stage':stage,'ok':tick.values.get('price') is not None,
-                                'values':tick.values,'confidence':tick.confidence,'raw':raw,'flags':tick.flags})
-        report['ok']=tick.values.get('price') is not None
+        checked=calibration_report(tick,raw)
+        report['steps'].append(dict(checked,stage=stage,ok=checked['can_save']))
+        report['ok']=checked['can_save']
         if not report['ok']:
-            report['error']='价格为空或低置信度，请检查标定，不能据此确认采集就绪。'
+            report['error']='；'.join(checked['blockers'])
     except Exception as exc:
         report['ok']=False
         report['steps'].append({'stage':stage,'ok':False,'error':exception_detail(exc)})

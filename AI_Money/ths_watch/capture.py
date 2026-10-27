@@ -3,25 +3,26 @@ import sys
 import re
 import os
 from PIL import Image, ImageOps
-from .core import Tick, now, number
+from .core import Tick, now, number, Sanity
 
-# Relative to the supplied 1920x~1040 client layout, not the inaccurate draft regions.
-# Verify on the user's physical display with the calibration editor before live use.
+# Approximate reference: 1920x1016 client, quote rows about 18 px apart.
+# Verify the field crops on the actual client image; never silently migrate user layouts.
+# price uses the small Latest cell, keeping the headline change value out of the crop.
 LAYOUT = {
  'identity':[.706,.048,.853,.075],
- 'price':[.737,.078,.782,.105],
- 'pct_change':[.802,.082,.826,.104],
- 'high':[.830,.394,.853,.412],
- 'low':[.830,.411,.853,.430],
- 'volume_total':[.747,.452,.782,.471],
- 'amount_total':[.747,.469,.782,.488],
- 'turnover_rate':[.813,.452,.853,.471],
- 'volume_ratio':[.830,.430,.853,.449],
- 'amplitude':[.750,.430,.782,.449],
- 'outer_vol':[.750,.505,.782,.524],
- 'inner_vol':[.818,.505,.853,.524],
- 'limit_up':[.758,.487,.782,.506],
- 'limit_down':[.833,.487,.853,.506],
+ 'price':[.747,.388,.782,.404],
+ 'pct_change':[.747,.424,.782,.441],
+ 'high':[.830,.406,.853,.423],
+ 'low':[.830,.424,.853,.441],
+ 'volume_total':[.747,.460,.782,.477],
+ 'amount_total':[.747,.478,.782,.495],
+ 'turnover_rate':[.813,.460,.853,.477],
+ 'volume_ratio':[.830,.442,.853,.459],
+ 'amplitude':[.747,.442,.782,.459],
+ 'outer_vol':[.747,.514,.782,.531],
+ 'inner_vol':[.813,.514,.853,.531],
+ 'limit_up':[.747,.496,.782,.513],
+ 'limit_down':[.830,.496,.853,.513],
  'wei_bi':[.729,.111,.769,.131],
 }
 
@@ -129,19 +130,21 @@ class Reader:
         if code not in codes:
             raise CaptureError('股票代码不匹配或未识别，请检查分时页并标定 identity 区域')
         values, confidence, raw = {}, {}, {}
+        flags = []
         for name, rect in layout.items():
             if name == 'identity':
                 continue
             lines = self.lines(crop(image,rect))
             raw[name] = lines
             # A calibrated cell must contain one value; multiple numeric tokens are ambiguous.
-            candidates = [(number(t.replace(' ','')),c) for t,c in lines]
+            candidates = [(number(t),c) for t,c in lines]
             candidates = [(n,c) for n,c in candidates if n is not None]
             if len(candidates) == 1:
                 values[name], confidence[name] = candidates[0]
             else:
                 values[name], confidence[name] = None, 0
-        return Tick((ts or now()).isoformat(),code,values,confidence),raw
+                flags.append('unparsed:'+name)
+        return Tick((ts or now()).isoformat(),code,values,confidence,flags),raw
 
 def exclude_from_capture(widget):
     """Best-effort Windows 10 2004+ exclusion of our own overlay, not other applications."""
@@ -169,3 +172,42 @@ def physical_to_logical(rect):
     ratio = screen.devicePixelRatio()
     g = screen.geometry()
     return (int(g.x()+(x-left)/ratio),int(g.y()+(y-top)/ratio),int(w/ratio),int(h/ratio))
+
+
+def calibration_report(tick, raw):
+    """Use live numeric checks during calibration, while preserving original OCR text."""
+    tick = Sanity().check(tick)
+    issues = []
+    names = {'price':'最新价','high':'最高价','low':'最低价','volume_total':'总手',
+             'amount_total':'成交额','turnover_rate':'换手率','outer_vol':'外盘','inner_vol':'内盘',
+             'limit_up':'涨停','limit_down':'跌停'}
+    for key,value in tick.values.items():
+        if value is not None:
+            continue
+        text = ' / '.join(str(row[0]) for row in raw.get(key,[]))
+        confidence = tick.confidence.get(key,0)
+        if text and confidence < .75 and confidence > 0:
+            reason = 'OCR置信度低于0.75，已拒绝'
+        elif text:
+            reason = '原文不是可信的单个数值，或与其他字段矛盾；请检查框选和单位'
+        else:
+            reason = '未识别到数值，请检查框选'
+        issues.append({'field':key,'message':names.get(key,key)+'：'+reason,'raw':text})
+    messages = {
+        'invalid_range':'最高价小于最低价：两项均已拒绝，请重新对准对应行，不能自动交换。',
+        'price_outside_range':'现价落在识别到的日内最高/最低范围外：范围数据已拒绝，请核对三个字段。',
+        'invalid_limits':'涨停价低于跌停价：两项均已拒绝，请核对对应行。',
+        'average_outside_range':'成交额与总手推导的均价超出日内范围：成交额已拒绝，请检查万/亿单位及总手单位。',
+    }
+    for flag in tick.flags:
+        if flag in messages:
+            issues.append({'field':'consistency','message':messages[flag]})
+    blockers = []
+    if tick.values.get('price') is None:
+        blockers.append('price 未得到可信最新价，不能保存为已标定')
+    for flag in ('invalid_range','price_outside_range','invalid_limits','above_limit','below_limit'):
+        if flag in tick.flags:
+            blockers.append(messages.get(flag,'最新价与涨跌停矛盾，请重新标定'))
+    return {'values':tick.values,'confidence':tick.confidence,'raw':raw,'flags':tick.flags,
+            'issues':issues,'can_save':not blockers,'blockers':blockers,
+            'note':'置信度不是框选正确率。保存前逐项与同花顺核对；缺失字段会使相关规则不可用。'}

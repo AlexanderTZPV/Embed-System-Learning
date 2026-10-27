@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QThread, Signal, QUrl, QObject, Slot
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (QApplication,QWidget,QMainWindow,QFrame,QLabel,QP
     QSystemTrayIcon,QMenu,QDialog,QRubberBand,QTableWidget,QTableWidgetItem,QHeaderView)
 from .config import load, save
 from .core import RULES, now, session, atomic_json, Store
-from .capture import locate,grab,Reader,LAYOUT,exclude_from_capture,physical_to_logical
+from .capture import locate,grab,Reader,LAYOUT,exclude_from_capture,physical_to_logical,crop,calibration_report,exception_detail
 from .worker import Worker
 from .ai import set_api_key
 
@@ -40,10 +41,13 @@ def error(parent,text):
 
 class ImageCanvas(QLabel):
     selected = Signal(object)
-    def __init__(self,image):
+    def __init__(self,image,max_height=None):
         super().__init__()
         self.source = image
-        self.setFixedSize(min(1152,image.width),int(image.height*min(1152,image.width)/image.width))
+        scale = min(1,1152/image.width)
+        if max_height is not None:
+            scale = min(scale,max_height/image.height)
+        self.setFixedSize(max(1,int(image.width*scale)),max(1,int(image.height*scale)))
         rgb = image.convert('RGB')
         q = QImage(rgb.tobytes(),rgb.width,rgb.height,rgb.width*3,QImage.Format.Format_RGB888).copy()
         self.setPixmap(QPixmap.fromImage(q).scaled(self.size(),Qt.AspectRatioMode.IgnoreAspectRatio))
@@ -74,16 +78,16 @@ class ImageCanvas(QLabel):
         self.band.show()
 
 class OcrTest(QThread):
-    result = Signal(str)
+    result = Signal(object)
     def __init__(self,image,layout,code):
         super().__init__()
         self.image,self.layout,self.code = image,layout,code
     def run(self):
         try:
             t,raw = Reader().read(self.image,self.layout,self.code)
-            self.result.emit(json.dumps({'values':t.values,'confidence':t.confidence,'raw':raw},ensure_ascii=False,indent=2))
+            self.result.emit(calibration_report(t,raw))
         except Exception as e:
-            self.result.emit('测试失败：'+str(e))
+            self.result.emit({'can_save':False,'blockers':['测试失败：'+exception_detail(e)]})
 
 class CaptureProbe(QThread):
     result = Signal(object)
@@ -101,18 +105,28 @@ class Calibration(QDialog):
         self.config = config
         self.layout = dict(config['layout'])
         self.job = None
+        self.last_report = None
         outer = QVBoxLayout(self)
         row = QHBoxLayout()
         self.field = QComboBox()
-        self.field.addItems(list(self.layout)+['main_net','net_xlarge','net_large','bid_volume','ask_volume','index_pct','macd','diff','dea','avg_price'])
+        self.field.addItems(list(dict.fromkeys(list(self.layout)+['main_net','net_xlarge','net_large','bid_volume','ask_volume','index_pct','macd','diff','dea','avg_price'])))
         row.addWidget(self.field)
         self.coords = QLabel()
         row.addWidget(self.coords)
         outer.addLayout(row)
-        self.canvas = ImageCanvas(image)
+        self.canvas = ImageCanvas(image,max_height=max(180,QApplication.primaryScreen().availableGeometry().height()-420))
         outer.addWidget(self.canvas)
         self.canvas.selected.connect(self.select)
         self.field.currentTextChanged.connect(self.highlight)
+        self.preview = QLabel()
+        self.preview.setFixedHeight(80)
+        self.preview.setMinimumWidth(360)
+        self.preview.setStyleSheet('background:black; border:1px solid #4b6475;')
+        outer.addWidget(self.preview)
+        outer.addWidget(QLabel('当前字段裁剪预览：必须只含对应数值；总手/金额保留万、亿等单位。'))
+        self.validation_status = QLabel('尚未测试：请先检查各字段预览，再点击测试识别。')
+        self.validation_status.setWordWrap(True)
+        outer.addWidget(self.validation_status)
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setMaximumHeight(150)
@@ -120,7 +134,9 @@ class Calibration(QDialog):
         outer.addWidget(self.output)
         row = QHBoxLayout()
         self.test_button = button('测试识别',self.test,row)
-        button('保存标定（需肉眼核对识别结果）',self.commit,row)
+        self.reset_button = button('恢复新版参考框',self.reset_layout,row)
+        self.commit_button = button('保存标定（先测试并核对）',self.commit,row)
+        self.commit_button.setEnabled(False)
         button('取消',self.reject,row)
         outer.addLayout(row)
         self.highlight(self.field.currentText())
@@ -129,20 +145,69 @@ class Calibration(QDialog):
         if key in self.layout:
             self.canvas.highlight(self.layout[key])
             self.coords.setText(str([round(n,4) for n in self.layout[key]]))
+            self.update_preview(self.layout[key])
+        else:
+            self.canvas.band.hide()
+            self.preview.clear()
+            self.coords.setText('尚未框选：请在图上拖框')
 
     def select(self,rect):
         self.layout[self.field.currentText()] = rect
         self.coords.setText(str([round(n,4) for n in rect]))
+        self.last_report = None
+        self.commit_button.setEnabled(False)
+        self.validation_status.setText('框选已改变，需要重新测试。')
+        self.update_preview(rect)
+
+    def update_preview(self,rect):
+        image = crop(self.canvas.source,rect).convert('RGB')
+        if image.width < 1 or image.height < 1:
+            self.preview.clear()
+            return
+        q = QImage(image.tobytes(),image.width,image.height,image.width*3,QImage.Format.Format_RGB888).copy()
+        self.preview.setPixmap(QPixmap.fromImage(q).scaled(self.preview.width(),80,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
+
+    def reset_layout(self):
+        if self.job and self.job.isRunning():
+            return
+        self.layout = deepcopy(LAYOUT)
+        self.last_report = None
+        self.commit_button.setEnabled(False)
+        self.validation_status.setText('已恢复参考框，请重新测试。')
+        self.output.setPlainText('已恢复新版参考框。请逐字段检查预览，必要时拖框微调，再测试。price 现在使用行情表“最新”的小字数值。')
+        self.highlight(self.field.currentText())
+
+    @Slot(object)
+    def show_test_result(self,report):
+        self.last_report = report
+        if report.get('can_save'):
+            count = len(report.get('issues',[]))
+            self.validation_status.setText(f'价格及一致性校验通过；仍有{count}项字段问题，请与屏幕核对。' if count else '数值校验通过；请再与同花顺肉眼核对后保存。')
+        else:
+            self.validation_status.setText('不能保存：'+'；'.join(report.get('blockers',['识别失败'])))
+        self.output.setPlainText(json.dumps(report,ensure_ascii=False,indent=2))
+        self.commit_button.setEnabled(bool(report.get('can_save')))
 
     def test(self):
         self.test_button.setEnabled(False)
+        self.commit_button.setEnabled(False)
+        self.last_report = None
+        self.canvas.setEnabled(False)
+        self.field.setEnabled(False)
+        self.reset_button.setEnabled(False)
         self.job = OcrTest(self.canvas.source,dict(self.layout),self.config['code'])
-        self.job.result.connect(self.output.setPlainText)
+        self.job.result.connect(self.show_test_result)
         self.job.finished.connect(lambda:self.test_button.setEnabled(True))
+        self.job.finished.connect(lambda:self.canvas.setEnabled(True))
+        self.job.finished.connect(lambda:self.field.setEnabled(True))
+        self.job.finished.connect(lambda:self.reset_button.setEnabled(True))
         self.job.start()
 
     def commit(self):
         if self.job and self.job.isRunning():
+            return
+        if not self.last_report or not self.last_report.get('can_save'):
+            error(self,'请先测试识别，并修正可信价格缺失或字段矛盾后再保存。')
             return
         self.config['layout'] = self.layout
         self.config['calibrated'] = True

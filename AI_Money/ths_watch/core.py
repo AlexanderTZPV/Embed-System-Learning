@@ -92,6 +92,24 @@ class Sanity:
             if bad:
                 v[key] = None
                 tick.flags.append('invalid:'+key)
+        if v.get('high') is not None and v.get('low') is not None and v['high'] < v['low']:
+            v['high'] = v['low'] = None
+            tick.flags.append('invalid_range')
+        if v.get('price') is not None and (
+            (v.get('high') is not None and v['price'] > v['high']+.011) or
+            (v.get('low') is not None and v['price'] < v['low']-.011)
+        ):
+            # Do not assume a high OCR score identifies the correct quote row.
+            v['high'] = v['low'] = None
+            tick.flags.append('price_outside_range')
+        if v.get('limit_up') is not None and v.get('limit_down') is not None and v['limit_up'] < v['limit_down']:
+            v['limit_up'] = v['limit_down'] = None
+            tick.flags.append('invalid_limits')
+        if all(v.get(k) is not None for k in ('high','low','amount_total','volume_total')) and v['volume_total'] > 0:
+            average = v['amount_total']/(v['volume_total']*100)
+            if not v['low']-.02 <= average <= v['high']+.02:
+                v['amount_total'] = None
+                tick.flags.append('average_outside_range')
         if v.get('price') is not None:
             if v.get('limit_up') is not None and v['price'] > v['limit_up']+.011:
                 v['price'] = None

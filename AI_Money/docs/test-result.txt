@@ -1,8 +1,8 @@
 Command (from AI_Money): python -m pytest -q
 Host: Linux / Python 3.12 / QT_QPA_PLATFORM=offscreen
-........................................................................ [ 65%]
-...............................sssssss                                   [100%]
-103 passed, 7 skipped in 14.03s
+........................................................................ [ 59%]
+...........................................sssssss                       [100%]
+115 passed, 7 skipped in 14.59s
 
 7 skipped checks require actual Windows cmd.exe; these are not Windows passes.
-Win32 failure handling is exercised with simulated APIs. User-machine capture diagnosis remains pending.
+OCR parsing regressions include user-provided text. Actual screenshot crop correctness still requires user calibration.
