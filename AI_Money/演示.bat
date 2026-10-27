@@ -1,2 +1,4 @@
 @echo off
-call "%~dp0启动.bat" --demo
+setlocal EnableExtensions DisableDelayedExpansion
+call "%~dp0demo.bat" %*
+exit /b %errorlevel%

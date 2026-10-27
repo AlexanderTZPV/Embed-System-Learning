@@ -1,0 +1,43 @@
+name: THS Watch Windows checks
+
+on:
+  push:
+    paths:
+      - 'AI_Money/**'
+      - 'AI_Money-Windows.zip'
+      - '.github/workflows/ths-watch-windows.yml'
+  pull_request:
+    paths:
+      - 'AI_Money/**'
+      - 'AI_Money-Windows.zip'
+      - '.github/workflows/ths-watch-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      THS_NO_PAUSE: '1'
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        working-directory: AI_Money
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Install using the delivered Windows entry point
+        shell: cmd
+        run: call setup.bat
+      - name: Install test dependencies
+        shell: cmd
+        run: .venv\Scripts\python.exe -m pip install pytest==8.3.5
+      - name: Test real cmd.exe dispatch, OCR, and application smoke run
+        shell: cmd
+        run: .venv\Scripts\python.exe -m pytest -q

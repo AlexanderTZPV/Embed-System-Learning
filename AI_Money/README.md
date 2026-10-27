@@ -1,17 +1,40 @@
 # 同花顺盯盘助手 / THS Watch 0.1
 
-Windows 10/11 x64 桌面程序：只读截屏、OCR、量价规则、可选 OpenAI 视觉分析、透明置顶悬浮层、每天一个日志。项目独立于云环境中的嵌入式学习仓库，不修改该仓库。
+Windows 10/11 x64 桌面程序：只读截屏、OCR、量价规则、可选 OpenAI 视觉分析、透明置顶悬浮层、每天一个日志。项目存放在仓库的 `AI_Money/` 独立目录，原有嵌入式学习资料保留。
 
 ## 在 G:\AI_Money 安装
 
 1. 把压缩包**内容**解压到 `G:\AI_Money`，确认存在 `G:\AI_Money\main.py`，不要多嵌套一层目录。
-2. 安装官方 Windows x64 Python **3.11 或 3.12**，包含 Python Launcher。首次安装依赖需要联网。
-3. 双击 `安装.bat`。成功后双击 `演示.bat`，可在没有同花顺的情况下检查界面和日志。
-4. 退出演示后双击 `启动.bat`，进入设置，关闭“模拟行情回放”，保存。
+2. 安装官方 Windows x64 Python **3.11 或 3.12**，建议包含 Python Launcher 或勾选 Add python.exe to PATH。首次安装依赖需要联网。
+3. 双击 `setup.bat`（中文入口 `安装.bat` 也可）。成功后双击 `demo.bat`（或 `演示.bat`），可在没有同花顺的情况下检查界面和日志。
+4. 退出演示后双击 `run.bat`（或 `启动.bat`），进入设置，关闭“模拟行情回放”，保存。
 5. 打开同花顺并进入附件所示的个股分时页。设置股票代码、保存，再完成下文的区域标定。
 6. 点击开始。非交易时段只显示等待；测试时可勾选“忽略交易日历和时段”。真实使用时请关闭此开关。
 
 本项目交付的是**可运行源码及 Windows 安装/打包脚本**，不是已经在你电脑安装的软件，也不包含已验证的 Windows exe。云端无法访问你的 G 盘。无需把 API 密钥发给聊天窗口。
+
+## 如果出现“endencies 不是内部或外部命令”
+
+这是旧版批处理在Windows下的换行/编码兼容问题，不是你操作有误。旧版脚本含UTF-8中文及LF换行；新版统一为ASCII内容和CRLF换行，中文入口只转调英文文件。
+
+1. 关闭旧安装窗口，从GitHub重新下载最新的 `AI_Money-Windows.zip`，不要反复运行旧解压目录里的脚本。
+2. 把新包完整解压到 `G:\AI_Money`，选择覆盖程序文件。新版不包含 `runtime`，不会覆盖已有设置、日志和API凭据。不要删除 `runtime`。
+3. 确认该目录新增了 `setup.bat`、`run.bat`、`demo.bat`，然后双击 `setup.bat`。完成后双击 `demo.bat`。
+4. 若提示 Python 未找到，安装官方64位Python 3.11或3.12，勾选Python Launcher或PATH后重试。
+5. 若提示已有 `.venv` 损坏或Python版本不符，先关闭软件，把 `.venv` **重命名**为 `.venv-backup`，再运行 `setup.bat`。无需删除个人数据。
+
+也可以在命令提示符中分行执行，绕过旧版安装脚本：
+
+```bat
+cd /d G:\AI_Money
+py -3.11 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe main.py --demo
+```
+
+如果安装的是3.12，把第一条Python命令中的 `-3.11` 改成 `-3.12`；请确认每一步成功再继续。没有 `py` 但已将正确Python加入PATH时，用 `python -m venv .venv`。
+
+新脚本不要求修改Windows系统编码或切换UTF-8区域设置。控制台提示使用英文，应用界面仍然是中文。
 
 ## 窗口操作
 

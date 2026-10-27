@@ -1,2 +1,7 @@
-................................................................         [100%]
-64 passed in 12.55s
+Command (from AI_Money): python -m pytest -q
+Host: Linux / Python 3.12 / QT_QPA_PLATFORM=offscreen
+........................................................................ [ 84%]
+......sssssss                                                            [100%]
+78 passed, 7 skipped in 13.09s
+
+7 skipped checks require actual Windows cmd.exe; these are not Windows passes.

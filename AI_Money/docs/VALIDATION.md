@@ -35,3 +35,11 @@
 - 配置原子替换，文件逐条flush；不是fsync级事务存储，不承诺断电绝不丢一条。
 
 这些边界不会被模拟演示或通过的单元测试掩盖；可以在真实Windows验收后继续迭代。
+
+## Windows 安装脚本修复
+
+针对用户截图中的 `endencies` 解析错误，旧版批处理文件的UTF-8中文/LF换行组合已替换为纯ASCII命令与CRLF；新增英文 `setup/run/demo/build.bat`，中文入口只调用英文入口。所有调用均引用程序目录并保留退出码；环境不存在、Python版本不符、依赖安装失败有可见提示。
+
+新增脚本及ZIP字节回归检查；打包工具 `tools/package_windows.py` 强制批处理输出ASCII/CRLF，Git属性固定后续检出换行。Windows专用测试使用实际 `cmd.exe` 和带中文/空格路径，检查参数转发、非零退出码和缺环境失败。它们在Linux会跳过，不能把这些跳过项算成Windows验收通过。
+
+仓库增加了 `.github/workflows/ths-watch-windows.yml`，在Windows runner调用真实 `setup.bat` 并运行全套检查；工作流配置本身不等于运行通过，请查看GitHub Actions对应提交结果。
