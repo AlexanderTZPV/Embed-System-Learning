@@ -28,7 +28,7 @@ def main():
     lock = QLockFile(str(root/'ths-watch.lock'))
     lock.setStaleLockTime(30000)
     if not lock.tryLock(100):
-        QMessageBox.information(None,'同花顺盯盘助手','这个数据目录已有实例正在运行。请从托盘打开。')
+        QMessageBox.information(None,'同花顺盯盘助手','这个数据目录已有实例正在运行。请从托盘打开已有窗口。若要退出演示，请先停止，在设置取消模拟行情并保存；或从设置退出软件后运行 run.bat。')
         return 1
     controller = Controller(app,root,args.demo)
     if args.demo:

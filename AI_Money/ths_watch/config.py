@@ -19,7 +19,11 @@ def load(root):
     if path.exists():
         saved = json.loads(path.read_text(encoding='utf-8'))
         c.update(saved)
+    # Demo is a session choice. Ignore the sticky flag written by older versions.
+    c['demo'] = False
     return c
 
 def save(root, c):
-    atomic_json(Path(root)/'config/app.json',c)
+    # Do not mutate the running session or persist simulated mode across launches.
+    persisted = {key:value for key,value in c.items() if key != 'demo'}
+    atomic_json(Path(root)/'config/app.json',persisted)

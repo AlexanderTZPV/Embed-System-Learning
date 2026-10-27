@@ -152,7 +152,7 @@ class Toolbar(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         row = QHBoxLayout(self)
         row.setContentsMargins(0,0,0,0)
-        self.start = button('▶ 开始',controller.toggle,row)
+        self.start = button('▶ 开始演示' if controller.config['demo'] else '▶ 开始实时监控',controller.toggle,row)
         self.start.setStyleSheet('background:#176b63;')
         button('设置',controller.show_settings,row)
         self.lock = button('鼠标穿透：关',self.toggle_input,row)
@@ -294,7 +294,10 @@ class Settings(QMainWindow):
         self.line(f,'同花顺窗口标题关键字','window_keyword')
         self.spin(f,'采样间隔（秒）','tick_seconds',1,30)
         self.check(f,'忽略交易日历和时段（仅测试）','force')
-        self.check(f,'模拟行情回放（不是实时行情；数据独立保存）','demo')
+        self.check(f,'仅本次运行启用模拟行情（下次正常启动默认实时）','demo')
+        self.mode_label = QLabel()
+        self.mode_label.setStyleSheet('color:#5eead4; font-weight:600;')
+        f.addRow(self.mode_label)
         f.addRow(QLabel('北京时间：09:15–09:25、09:30–11:30、13:00–15:00；每个完整分钟结束后输出。'))
         b = QPushButton('导入交易日历 JSON')
         b.clicked.connect(self.calendar)
@@ -371,7 +374,7 @@ class Settings(QMainWindow):
         b = QPushButton('运行本机诊断')
         b.clicked.connect(self.diagnose)
         f.addRow(b)
-        f.addRow(QLabel('演示模式：监控页勾选后保存，点击开始。每秒回放一分钟，日志保存到 runtime/demo。'))
+        f.addRow(QLabel('演示仅本次生效：监控页勾选并保存后点击“开始演示”。每秒回放一分钟。正常启动不继承演示选择。'))
         row = QHBoxLayout()
         button('保存设置',self.apply,row)
         button('显示悬浮层',controller.show_overlay,row)
@@ -381,6 +384,7 @@ class Settings(QMainWindow):
         self.refresh()
 
     def refresh(self):
+        self.mode_label.setText('当前数据源：模拟行情（不是实时行情）' if self.c.config['demo'] else '当前数据源：同花顺真实截图（需要标定）')
         self.calibrated_label.setText('标定状态：'+('已保存（仍需真机核对）' if self.c.config['calibrated'] else '未标定'))
 
     def line(self,form,label,key):
@@ -429,7 +433,7 @@ class Settings(QMainWindow):
             self.c.overlay.apply_geometry()
             self.c.overlay.update()
             self.refresh()
-            self.c.overlay.status.setText('设置已保存 · 点击开始监控')
+            self.c.reset_monitoring_view('设置已应用 · '+('点击开始演示' if c['demo'] else '点击开始实时监控'))
         except Exception as e:
             error(self,'保存失败：'+str(e))
 
@@ -538,8 +542,7 @@ class Controller(QObject):
         self.app,self.root = app,Path(root)
         self.root.mkdir(parents=True,exist_ok=True)
         self.config = load(root)
-        if demo:
-            self.config['demo'] = True
+        self.config['demo'] = bool(demo)
         self.worker = None
         self.closing = False
         self.overlay = Overlay(self)
@@ -554,7 +557,17 @@ class Controller(QObject):
         self.tray.activated.connect(lambda reason:self.show_settings() if reason==QSystemTrayIcon.ActivationReason.DoubleClick else None)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
+        self.reset_monitoring_view()
         self.overlay.show()
+
+    def reset_monitoring_view(self, message=None):
+        demo = self.config['demo']
+        mode = '演示' if demo else '实时监控'
+        self.overlay.header.setText(f"● 【{mode}】{self.config['name']} {self.config['code']}")
+        self.overlay.metrics.setText('等待模拟数据（不是实时行情）' if demo else '等待同花顺真实截图数据')
+        self.overlay.entries.clear()
+        self.overlay.status.setText(message or ('演示模式 · 仅本次运行' if demo else '实时模式 · 已停止 · 首次使用请标定'))
+        self.overlay.toolbar.start.setText('▶ 开始演示' if demo else '▶ 开始实时监控')
 
     def toggle(self):
         if self.worker and self.worker.isRunning():
@@ -565,21 +578,21 @@ class Controller(QObject):
         if self.config.get('holidays') is not None and self.config['calendar_year'] != now().year and not self.config['force'] and not self.config['demo']:
             error(self.settings,'导入的日历不是今年，请更新交易日历。')
             return
-        self.overlay.entries.clear()
+        self.reset_monitoring_view('正在启动'+('演示' if self.config['demo'] else '实时监控')+'…')
         self.worker = Worker(self.config,self.root)
         self.worker.status.connect(self.overlay.status.setText)
         self.worker.ticked.connect(self.tick)
         self.worker.concluded.connect(self.result)
         self.worker.finished.connect(self.stopped)
         self.worker.start()
-        self.overlay.toolbar.start.setText('■ 停止')
+        self.overlay.toolbar.start.setText('■ 停止演示' if self.config['demo'] else '■ 停止实时监控')
 
     @Slot(object)
     def tick(self,t):
         v = t.values
         def fmt(k):
             return '—' if v.get(k) is None else f'{v[k]:g}'
-        self.overlay.header.setText(f"● {'【演示】' if self.config['demo'] else ''}{self.config['name']} {t.code}   {fmt('price')}")
+        self.overlay.header.setText(f"● {'【演示】' if self.config['demo'] else '【实时】'}{self.config['name']} {t.code}   {fmt('price')}")
         self.overlay.metrics.setText(f"换手 {fmt('turnover_rate')}%   总量 {fmt('volume_total')}手   量比 {fmt('volume_ratio')}   [{t.dt:%H:%M:%S}]")
 
     @Slot(object)
@@ -590,12 +603,12 @@ class Controller(QObject):
     @Slot()
     def stopped(self):
         self.overlay.toolbar.start.setEnabled(True)
-        self.overlay.toolbar.start.setText('▶ 开始')
+        self.overlay.toolbar.start.setText('▶ 开始演示' if self.config['demo'] else '▶ 开始实时监控')
         # Keep fatal errors visible rather than reporting them as successful stops.
         if self.closing:
             self.tray.hide(); self.app.quit()
         elif self.worker and self.worker.halt.is_set():
-            self.overlay.status.setText('已停止')
+            self.overlay.status.setText('已停止演示' if self.config['demo'] else '已停止实时监控')
 
     def remember_geometry(self):
         r = self.overlay.geometry()

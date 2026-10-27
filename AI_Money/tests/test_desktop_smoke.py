@@ -24,3 +24,5 @@ def test_entrypoint_demo_complete_pipeline(tmp_path):
     assert len(list((tmp_path/'demo/logs').glob('*.log')))==1
     assert not list(tmp_path.rglob('crash-*'))
     assert not (tmp_path/'ths-watch.lock').exists()
+    saved=json.loads((tmp_path/'config/app.json').read_text(encoding='utf-8'))
+    assert 'demo' not in saved  # Even a completed demo session must not make the next run simulated.
