@@ -6,11 +6,12 @@ import json
 import threading
 import time
 import shutil
+import traceback
 from PIL import Image, ImageDraw
 from PySide6.QtCore import QThread, Signal
 from . import ai
 from .core import Tick, Store, Sanity, Minutes, Engine, now, session, active, atomic_json, SH
-from .capture import Reader, locate, grab, privacy_image, CaptureError
+from .capture import Reader, locate, grab, privacy_image, CaptureError, exception_detail
 
 
 def demo_tick(index, ts, code):
@@ -47,6 +48,8 @@ class Worker(QThread):
         self.known = {}
         self.last_error = None
         self.last_error_time = 0
+        self.last_capture_trace = None
+        self.last_capture_trace_time = 0
         self.minute_image = None
         self.future = None
         self.llm_errors = 0
@@ -62,6 +65,20 @@ class Worker(QThread):
         if msg != self.last_error or time.monotonic()-self.last_error_time > 60:
             self.store.event('WARN '+msg)
             self.last_error,self.last_error_time = msg,time.monotonic()
+
+    def report_capture_error(self, stage, exc):
+        detail = exception_detail(exc)
+        message = f'采集失败【{stage}】：{detail}'
+        if len(message) > 350:
+            message = message[:350]+'…（完整内容见日志）'
+        self.report_error(message)
+        # Capture pipeline only: never log HTTP exceptions or API credentials here.
+        signature = (stage,detail)
+        if signature != self.last_capture_trace or time.monotonic()-self.last_capture_trace_time > 60:
+            trace = ''.join(traceback.format_exception(type(exc),exc,exc.__traceback__))
+            self.store.event(f'ERROR 采集步骤={stage}\n'+trace)
+            self.last_capture_trace = signature
+            self.last_capture_trace_time = time.monotonic()
 
     def publish(self,c,image):
         if self.config.get('demo'):
@@ -163,6 +180,7 @@ class Worker(QThread):
                 self.halt.wait(.25)
                 continue
             last_sample = time.monotonic()
+            stage = '初始化采集'
             try:
                 if self.config.get('demo'):
                     tick,image = demo_tick(index,demo_ts+timedelta(minutes=index),self.config['code'])
@@ -171,12 +189,17 @@ class Worker(QThread):
                     if not self.config.get('calibrated'):
                         raise CaptureError('首次实时运行需要：设置 → 区域标定 → 测试识别并确认')
                     if reader is None:
+                        stage = '加载OCR模型'
                         self.status.emit('正在加载本地 OCR 模型…')
                         reader = Reader()
+                    stage = '窗口定位'
                     _,rect = locate(self.config['window_keyword'])
+                    stage = '屏幕截图'
                     frame = grab(rect)
+                    stage = 'OCR识别'
                     tick,_ = reader.read(frame,self.config['layout'],self.config['code'])
                     image = privacy_image(frame)
+                stage = '数值校验与保存'
                 tick = sanity.check(tick)
                 self.store.tick(tick)
                 if tick.values.get('price') is None:
@@ -189,9 +212,12 @@ class Worker(QThread):
                 self.status.emit(('【演示：每秒回放一分钟】' if self.config.get('demo') else state+' · 监控中')+
                                  (' · 部分OCR字段无效' if tick.flags else ''))
             except CaptureError as e:
-                self.report_error(str(e))
+                if e.__cause__ is not None:
+                    self.report_capture_error(stage,e)
+                else:
+                    self.report_error(str(e))
             except Exception as e:
-                self.report_error('采集失败：'+type(e).__name__+'；检查依赖、窗口与标定')
+                self.report_capture_error(stage,e)
             self.halt.wait(.1)
         # Deliberately do not emit an incomplete minute on manual stop.
         self.store.event('INFO 用户停止监控，未完成分钟不作完整分钟结论')

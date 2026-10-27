@@ -85,6 +85,15 @@ class OcrTest(QThread):
         except Exception as e:
             self.result.emit('测试失败：'+str(e))
 
+class CaptureProbe(QThread):
+    result = Signal(object)
+    def __init__(self,config,parent=None):
+        super().__init__(parent)
+        self.config = dict(config)
+    def run(self):
+        from .diagnostics import probe
+        self.result.emit(probe(self.config))
+
 class Calibration(QDialog):
     def __init__(self, image, config, parent=None):
         super().__init__(parent)
@@ -185,6 +194,8 @@ class Overlay(QWidget):
         self.header.setStyleSheet('color:#5eead4; font-weight:600; font-size:14px;')
         outer.addWidget(self.header)
         self.status = QLabel('已停止 · 拖动标题可移动窗口 · 控制条始终可点击')
+        self.status.setWordWrap(True)
+        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         outer.addWidget(self.status)
         self.metrics = QLabel('等待监控数据')
         outer.addWidget(self.metrics)
@@ -271,6 +282,7 @@ class Settings(QMainWindow):
     def __init__(self,controller):
         super().__init__()
         self.c = controller
+        self.probe_job = None
         self.setWindowTitle('同花顺盯盘助手 · 系统设置')
         self.resize(970,700)
         root = QWidget()
@@ -374,6 +386,9 @@ class Settings(QMainWindow):
         b = QPushButton('运行本机诊断')
         b.clicked.connect(self.diagnose)
         f.addRow(b)
+        self.probe_button = QPushButton('测试采集并生成诊断（先停止监控）')
+        self.probe_button.clicked.connect(self.start_capture_probe)
+        f.addRow(self.probe_button)
         f.addRow(QLabel('演示仅本次生效：监控页勾选并保存后点击“开始演示”。每秒回放一分钟。正常启动不继承演示选择。'))
         row = QHBoxLayout()
         button('保存设置',self.apply,row)
@@ -510,6 +525,40 @@ class Settings(QMainWindow):
             except Exception as e:
                 error(self,str(e))
 
+    def start_capture_probe(self):
+        if self.c.worker and self.c.worker.isRunning():
+            error(self,'请先停止监控，等待停止完成后再测试采集。')
+            return
+        if self.probe_job and self.probe_job.isRunning():
+            return
+        self.probe_button.setEnabled(False)
+        self.diagnostics.setPlainText('正在测试窗口定位、截图和OCR；本次不会上传或保存截图。')
+        self.c.overlay.hide(); self.c.overlay.toolbar.hide(); self.hide()
+        def start():
+            self.probe_job = CaptureProbe(self.c.config,self)
+            self.probe_job.result.connect(self.show_probe_result)
+            self.probe_job.finished.connect(self.capture_probe_finished)
+            self.probe_job.start()
+        QTimer.singleShot(400,start)
+
+    @Slot(object)
+    def show_probe_result(self,report):
+        from .diagnostics import write_report
+        try:
+            path = write_report(self.c.root,report)
+            location = str(path)
+        except OSError as exc:
+            location = '报告保存失败：'+str(exc)
+        self.diagnostics.setPlainText(location+'\n'+json.dumps(report,ensure_ascii=False,indent=2))
+        if not self.c.closing:
+            self.show(); self.raise_(); self.c.show_overlay()
+
+    @Slot()
+    def capture_probe_finished(self):
+        self.probe_button.setEnabled(True)
+        if self.c.closing:
+            self.c.quit()
+
     def diagnose(self):
         import shutil,importlib.util
         lines = [f'Python {sys.version.split()[0]} / {sys.platform}',f'北京时间 {now().isoformat()}',
@@ -570,6 +619,9 @@ class Controller(QObject):
         self.overlay.toolbar.start.setText('▶ 开始演示' if demo else '▶ 开始实时监控')
 
     def toggle(self):
+        if not self.settings.probe_button.isEnabled():
+            error(self.settings,'正在测试采集，请等待自检完成后开始监控。')
+            return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.overlay.status.setText('正在停止，等待当前采集结束…')
@@ -606,7 +658,7 @@ class Controller(QObject):
         self.overlay.toolbar.start.setText('▶ 开始演示' if self.config['demo'] else '▶ 开始实时监控')
         # Keep fatal errors visible rather than reporting them as successful stops.
         if self.closing:
-            self.tray.hide(); self.app.quit()
+            self.quit()
         elif self.worker and self.worker.halt.is_set():
             self.overlay.status.setText('已停止演示' if self.config['demo'] else '已停止实时监控')
 
@@ -647,6 +699,11 @@ class Controller(QObject):
     def quit(self):
         self.remember_geometry()
         self.closing = True
+        if self.settings.probe_job and self.settings.probe_job.isRunning():
+            if self.worker and self.worker.isRunning():
+                self.worker.stop()
+            self.overlay.status.setText('正在等待采集自检结束后退出…')
+            return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.overlay.status.setText('正在退出…')

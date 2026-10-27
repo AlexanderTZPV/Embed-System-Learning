@@ -1,6 +1,7 @@
 """Windows client-area capture. Foreground checks prevent using covered market data."""
 import sys
 import re
+import os
 from PIL import Image, ImageOps
 from .core import Tick, now, number
 
@@ -27,30 +28,69 @@ LAYOUT = {
 class CaptureError(RuntimeError):
     pass
 
+def exception_detail(exc):
+    """Qualified names distinguish pywintypes.error from cv2.error."""
+    name = type(exc).__module__+'.'+type(exc).__name__
+    message = ' '.join(str(exc).split())
+    code = getattr(exc,'winerror',None)
+    if code is not None and str(code) not in message:
+        message = f'WinError {code} '+message
+    return name+(': '+message if message else '（无错误消息）')
+
+
 def locate(keyword='同花顺', require_foreground=True):
     if sys.platform != 'win32':
         raise CaptureError('实时桌面采集需要 Windows；可使用演示或图片识别模式')
     import win32gui
     import win32con
+    import win32process
+    import pywintypes
     windows = []
+    skipped = []
     def enum(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd) and keyword in win32gui.GetWindowText(hwnd):
-            x,y,w,h = win32gui.GetClientRect(hwnd)
+        # Windows may disappear between any two Win32 calls, even during enumeration.
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            if keyword not in win32gui.GetWindowText(hwnd):
+                return True
+            _,pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid == os.getpid():
+                return True
+            left,top,right,bottom = win32gui.GetClientRect(hwnd)
+            w,h = right-left,bottom-top
             if w > 800 and h > 500:
                 windows.append((w*h,hwnd))
-    win32gui.EnumWindows(enum,None)
+        except pywintypes.error as exc:
+            skipped.append(exception_detail(exc))
+        return True
+    try:
+        win32gui.EnumWindows(enum,None)
+    except pywintypes.error as exc:
+        raise CaptureError('窗口枚举失败：'+exception_detail(exc)) from exc
     if not windows:
-        raise CaptureError('未找到同花顺主窗口，请打开个股分时界面')
+        detail = '；部分候选窗口不可用：'+skipped[0] if skipped else ''
+        raise CaptureError('未找到同花顺主窗口，请打开个股分时界面'+detail)
     hwnd = max(windows)[1]
-    if win32gui.IsIconic(hwnd):
-        raise CaptureError('同花顺已最小化，采集暂停')
-    if require_foreground:
-        fg = win32gui.GetForegroundWindow()
-        if win32gui.GetAncestor(fg, win32con.GA_ROOT) != hwnd:
-            raise CaptureError('请保持同花顺在前台；其他窗口遮挡时暂停采集')
-    x,y,w,h = win32gui.GetClientRect(hwnd)
-    left,top = win32gui.ClientToScreen(hwnd,(0,0))
-    return hwnd, (left,top,w,h)
+    try:
+        if require_foreground:
+            fg = win32gui.GetForegroundWindow()
+            if not fg:
+                raise CaptureError('当前前台窗口暂不可用，采集暂停并自动重试')
+            root = win32gui.GetAncestor(fg,win32con.GA_ROOT)
+            if root not in {candidate for _,candidate in windows}:
+                raise CaptureError('请保持同花顺在前台；其他窗口遮挡时暂停采集')
+            hwnd = root
+        if win32gui.IsIconic(hwnd):
+            raise CaptureError('同花顺已最小化，采集暂停')
+        left,top,right,bottom = win32gui.GetClientRect(hwnd)
+        w,h = right-left,bottom-top
+        if w <= 0 or h <= 0:
+            raise CaptureError('同花顺客户区为空，请恢复窗口后重试')
+        x,y = win32gui.ClientToScreen(hwnd,(left,top))
+    except pywintypes.error as exc:
+        raise CaptureError('读取同花顺窗口失败：'+exception_detail(exc)) from exc
+    return hwnd, (x,y,w,h)
 
 def grab(rect):
     import mss
